@@ -27,8 +27,8 @@ struct oscillatorStruct oscillators[8];
 
 struct channelStruct {
   volatile byte note;  //done
-  volatile byte glissandoRate;
-  volatile byte glissando;
+  volatile byte glissandoRate;  //done
+  volatile byte glissando;  //done
   volatile byte vibratoPhase; 
   volatile byte arpegioTimer; //done
 };
@@ -53,13 +53,14 @@ volatile int outputA = 0;
 byte ledTimer, arpegioTimer;
 byte arpegioDelay = 4;  //if another key is pressed within 0.2s start arpedio mode
 boolean ledOn = false;
-boolean arpegioMode = true;
+boolean arpegioMode = false;
+boolean glissandoMode = true;
 byte decay = 0;
 boolean started = false;
 
 
 byte globalWaveform = SQUARE;
-byte globalDutyCycle = 127;
+byte globalDutyCycle = 31; //50%: 127   25%: 63  12.5%: 31
 
 void setup(){    
   setupTimer();
@@ -102,8 +103,9 @@ void setup(){
     channels[i].glissando = 0;
     channels[i].vibratoPhase = 0;
     
-    oscillators[i].dutyCycle = globalDutyCycle;  //50%: 127   25%: 63  12.5%: 31
+    oscillators[i].dutyCycle = globalDutyCycle;  
     oscillators[i].volume = 0;
+    oscillators[i].waveform = globalWaveform;
     oscillators[i].waveform = globalWaveform;
 
   }
@@ -126,9 +128,15 @@ void loop(){
       switch(MIDI.getType()){
         case midi::NoteOn:
           for(int i=0;i<8;i++){
-            if(arpegioTimer > 0 && data1+1 == channels[lastChannel].note){
+            if(glissandoMode && arpegioTimer > 0 && data1-1 == channels[lastChannel].note){
               byte g = midi2Freq(data1) - midi2Freq(channels[lastChannel].note);
-              channels[lastChannel].glissando = g;  
+              channels[lastChannel].glissando = g;
+              channels[lastChannel].note = data1;
+              keys[data1].channel = lastChannel;
+              keys[data1].pressed = true;
+              keys[data1-1].pressed = false;
+              keys[data1].update = true;
+              break;  
             }
             else if(arpegioMode && arpegioTimer > 0){
               keys[data1].channel = lastChannel;
@@ -270,10 +278,16 @@ ISR (TIMER2_COMPA_vect)  {
       channels[i].arpegioTimer--;
     }
     
+    if(glissandoMode && channels[i].glissando > 0){       
+       //setFreq(i, midi2Freq(channels[i].note)-channels[i].glissando); 
+       keys[channels[i].note].update = true;
+       channels[i].glissando -= channels[i].glissandoRate;
+    }
+    
     if(keys[channels[i].note].pressed == true && keys[channels[i].note].update == true){
       keys[channels[i].note].update = false;
       oscillators[i].volume = 64;
-      setFreq(i, midi2Freq(channels[i].note));  
+      setFreq(i, midi2Freq(channels[i].note)-channels[i].glissando);  
     }
     else if(keys[channels[i].note].pressed == false && keys[channels[i].note].update == true){
       keys[channels[i].note].update = false;
