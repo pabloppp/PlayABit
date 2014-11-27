@@ -55,7 +55,7 @@ byte arpegioDelay = 4;  //if another key is pressed within 0.2s start arpedio mo
 boolean ledOn = false;
 boolean arpegioMode = false;
 boolean glissandoMode = true;
-byte decay = 0;
+byte releaseRate = 0;
 boolean started = false;
 
 
@@ -191,6 +191,7 @@ void loop(){
       }
       
     }
+    //~~
     
 }
 
@@ -290,8 +291,17 @@ ISR (TIMER2_COMPA_vect)  {
       setFreq(i, midi2Freq(channels[i].note)-channels[i].glissando);  
     }
     else if(keys[channels[i].note].pressed == false && keys[channels[i].note].update == true){
-      keys[channels[i].note].update = false;
-      oscillators[i].volume = 0;
+      if(releaseRate == 0){
+        keys[channels[i].note].update = false;
+        oscillators[i].volume = 0;
+      }
+      else{
+        if(oscillators[i].volume > 0) oscillators[i].volume -= releaseRate;
+        else if(oscillators[i].volume <= 0){
+          oscillators[i].volume = 0;
+          keys[channels[i].note].update = false;
+        }
+      }
     }
   }
   
