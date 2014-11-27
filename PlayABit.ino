@@ -26,30 +26,40 @@ struct oscillatorStruct {
 struct oscillatorStruct oscillators[8];
 
 struct channelStruct {
-  volatile byte note;
+  volatile byte note;  //done
   volatile byte glissandoRate;
   volatile byte glissando;
-  volatile byte vibratoPhase;
-  volatile byte arpegioTimer;
+  volatile byte vibratoPhase; 
+  volatile byte arpegioTimer; //done
 };
 
 struct channelStruct channels[8];
 
-byte noteReference[256];
+struct keyStruct {
+  boolean pressed;
+  byte channel;
+  boolean update;
+};
+
+struct keyStruct keys[128];
 
 byte lastChannel = 0;
 
 // volatile variables used in ISR
 volatile int outputA = 0;
 
+
+//not volatile variables
 byte ledTimer, arpegioTimer;
-byte arpegioDelay = 20;  //if another key is pressed within 0.2s start arpedio mode
+byte arpegioDelay = 4;  //if another key is pressed within 0.2s start arpedio mode
 boolean ledOn = false;
-boolean arpegioMode = false;
-byte decay = 10;
+boolean arpegioMode = true;
+byte decay = 0;
+boolean started = false;
 
 
 byte globalWaveform = SQUARE;
+byte globalDutyCycle = 127;
 
 void setup(){    
   setupTimer();
@@ -88,15 +98,23 @@ void setup(){
   
   for(int i=0;i<8;i++){
     channels[i].note = 0;
-    channels[i].glissandoRate = 0;
+    channels[i].glissandoRate = 1;
     channels[i].glissando = 0;
     channels[i].vibratoPhase = 0;
     
-    oscillators[i].dutyCycle = 127;  //50%: 127   25%: 63  12.5%: 31
+    oscillators[i].dutyCycle = globalDutyCycle;  //50%: 127   25%: 63  12.5%: 31
     oscillators[i].volume = 0;
-    oscillators[i].waveform = SQUARE;
+    oscillators[i].waveform = globalWaveform;
 
   }
+  
+  for(int i=0;i<127;i++){
+    keys[i].pressed = false;
+    keys[i].channel = 0;
+    keys[i].update = false;
+  }
+  
+  started = true;
   
 }
 
@@ -108,14 +126,21 @@ void loop(){
       switch(MIDI.getType()){
         case midi::NoteOn:
           for(int i=0;i<8;i++){
-            if(arpegioMode && arpegioTimer > 0){
-              noteReference[data1] = lastChannel;
+            if(arpegioTimer > 0 && data1+1 == channels[lastChannel].note){
+              byte g = midi2Freq(data1) - midi2Freq(channels[lastChannel].note);
+              channels[lastChannel].glissando = g;  
+            }
+            else if(arpegioMode && arpegioTimer > 0){
+              keys[data1].channel = lastChannel;
+              keys[data1].pressed = true;
               break;
             }
-            if(channels[i].note == 0){
+            if(keys[channels[i].note].pressed == false){
               channels[i].note = data1;
               lastChannel = i;
-              noteReference[data1] = i+1;
+              keys[data1].channel = lastChannel;
+              keys[data1].pressed = true;
+              keys[data1].update = true;
               break;
             }
           }
@@ -124,11 +149,9 @@ void loop(){
         
         case midi::NoteOff:
             for(int i=0;i<8;i++){
-              if(channels[i].note == data1){
-                channels[i].note = 0;
-                noteReference[data1] = 0;
+                keys[data1].pressed = false;
+                keys[data1].update = true;
                 break;
-              }
             }
             break;
         
@@ -136,6 +159,31 @@ void loop(){
           break;  
       }
     }
+    
+    //arpegio
+    for(int i=0;i<8;i++){
+      
+      if(channels[i].arpegioTimer == 0){
+        channels[i].arpegioTimer = arpegioDelay;
+        
+        byte newNote = channels[i].note-1;
+        for(int j=0;j<127;j++){  //recorremos todas las notas a ver si alguna esta asociada al canal 1
+          newNote &= ~(1 << 7);
+          //if(newNote > 127) newNote -= 127;
+          if(keys[newNote].pressed == true && keys[newNote].channel == i && channels[i].note != newNote){
+            channels[i].note = newNote;
+            keys[newNote].update = true;
+            //setFreq(i, midi2Freq(channels[i].note));  
+            digitalWrite(13, HIGH);
+            break;
+          }
+          newNote -= 1;
+        }
+        
+      }
+      
+    }
+    
 }
 
 void setupTimer(){
@@ -190,6 +238,8 @@ void setupTimer(){
 }
 
 ISR (TIMER2_COMPA_vect)  {
+  
+  if(!started) return;
   //Timer 2 called at 100Hz
   /*
   if(ledTimer > 25 && !ledOn){
@@ -216,38 +266,19 @@ ISR (TIMER2_COMPA_vect)  {
   
   for(int i=0;i<8;i++){
     
-    if(channels[i].note != 0){
-      
-      if(channels[i].arpegioTimer == 0){
-        if(arpegioMode){
-          for(byte j=1;j<255;j++){
-            byte newnote = (channels[j].note+j)%256;
-            if(noteReference[newnote] != 0 && noteReference[newnote] == i+1){
-              channels[i].note = newnote;
-              setFreq(i, midi2Freq(channels[i].note));
-            }
-          }
-          channels[i].arpegioTimer = arpegioDelay;
-        }
-        channels[i].arpegioTimer--;
-      }      
-      
-      if(oscillators[i].volume == 0){
-        oscillators[i].volume = 64;
-        setFreq(i, midi2Freq(channels[i].note));
-      }
-      
+    if(arpegioMode && channels[i].arpegioTimer > 0){
+      channels[i].arpegioTimer--;
     }
     
-    else if(channels[i].note == 0){
-      
-      //if(decay == 0) oscillators[i].volume = 0;
-      //else oscillators[i].volume -= decay;
-      
-      oscillators[i].volume = 0;
-      
+    if(keys[channels[i].note].pressed == true && keys[channels[i].note].update == true){
+      keys[channels[i].note].update = false;
+      oscillators[i].volume = 64;
+      setFreq(i, midi2Freq(channels[i].note));  
     }
-   
+    else if(keys[channels[i].note].pressed == false && keys[channels[i].note].update == true){
+      keys[channels[i].note].update = false;
+      oscillators[i].volume = 0;
+    }
   }
   
 }
