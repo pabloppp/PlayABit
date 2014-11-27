@@ -1,0 +1,30 @@
+
+CPU freq = 16Mhz 
+
+max timer counter (256 (8 bits) for timer 0 & 2, 65536 (16 bits) for timer 1)
+
+dividimos la frecuencia por el preescolar elegido, ej:
+16000000 / 256 = 62500
+
+dividimos el resultado por la frecuencia deseada, ej: 2Hz
+
+62500 / 2 = 31250
+
+comprobar que el resultado sea inferior al max timer counter, si falla, elegimos un prescalar superior.
+
+
+Los timbres pueden estar en 2 modos, PWM mode o CTC mode
+
+prescalar 1
+
+16000000 / 32500 = 492
+
+freq = 32.5 kHz
+
+prescalar 8
+
+16000000 / 8 = 61;
+
+
+
+

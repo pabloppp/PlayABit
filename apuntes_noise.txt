@@ -1,0 +1,22 @@
+
+
+//FOR NOISE
+
+r20 = 2
+lsl r8 left shift  0001 -> 0010
+rol r9 rotate left and add carry 0101 -> 101C  (c es 0 o 1 segúl el bit de carry del shift anterior)
+
+/*
+Las dos ultimas operaciones equivalen a una multiplicación por dos, por ejemplo:
+
+200*2 = 400
+
+00000000  11001000   -> left shift byte A:   10010000   C=1
+rotate left byte B = 00000000 + C = 00000001
+
+400 = 00000001  10010000
+*/
+
+brvc skip  //si el overflow esta limpio saltamos, si no
+eor r8, r20 exclusive or ej: 00000001 XOR 00000010 = 00000011
+skip:
