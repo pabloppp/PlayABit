@@ -29,16 +29,16 @@ struct channelStruct {
   volatile byte note;  //done
   volatile byte glissandoRate;  //done
   volatile byte glissando;  //done
-  volatile byte vibratoPhase; 
+  volatile unsigned int vibratoPhase; 
   volatile byte arpegioTimer; //done
 };
 
 struct channelStruct channels[8];
 
 struct keyStruct {
-  boolean pressed;
-  byte channel;
-  boolean update;
+  volatile boolean pressed;
+  volatile byte channel;
+  volatile boolean update;
 };
 
 struct keyStruct keys[128];
@@ -53,9 +53,11 @@ volatile int outputA = 0;
 byte ledTimer, arpegioTimer;
 byte arpegioDelay = 4;  //if another key is pressed within 0.2s start arpedio mode
 boolean ledOn = false;
-boolean arpegioMode = false;
+boolean arpegioMode = true;
 boolean glissandoMode = true;
-byte releaseRate = 0;
+byte releaseRate = 0;      // 2,5 secs
+unsigned int vibratoTics = 10*65535UL/1000;  // 10 = 1Hz
+byte vibratoAmp = 16;
 boolean started = false;
 
 
@@ -106,7 +108,6 @@ void setup(){
     oscillators[i].dutyCycle = globalDutyCycle;  
     oscillators[i].volume = 0;
     oscillators[i].waveform = globalWaveform;
-    oscillators[i].waveform = globalWaveform;
 
   }
   
@@ -128,7 +129,7 @@ void loop(){
       switch(MIDI.getType()){
         case midi::NoteOn:
           for(int i=0;i<8;i++){
-            if(glissandoMode && arpegioTimer > 0 && data1-1 == channels[lastChannel].note){
+            if(glissandoMode && arpegioTimer > 0 && data1-1 == channels[lastChannel].note){ //if note pressed in glissando mode
               byte g = midi2Freq(data1) - midi2Freq(channels[lastChannel].note);
               channels[lastChannel].glissando = g;
               channels[lastChannel].note = data1;
@@ -136,14 +137,15 @@ void loop(){
               keys[data1].pressed = true;
               keys[data1-1].pressed = false;
               keys[data1].update = true;
+              keys[data1-1].update = true;
               break;  
             }
-            else if(arpegioMode && arpegioTimer > 0){
+            else if(arpegioMode && arpegioTimer > 0){  //else if note pressed in arpegio mode
               keys[data1].channel = lastChannel;
               keys[data1].pressed = true;
               break;
             }
-            if(keys[channels[i].note].pressed == false){
+            else if(keys[channels[i].note].pressed == false){  //else normal note
               channels[i].note = data1;
               lastChannel = i;
               keys[data1].channel = lastChannel;
@@ -156,11 +158,8 @@ void loop(){
           break;
         
         case midi::NoteOff:
-            for(int i=0;i<8;i++){
-                keys[data1].pressed = false;
-                keys[data1].update = true;
-                break;
-            }
+            keys[data1].pressed = false;
+            channels[keys[data1].channel].note = 0;
             break;
         
         default:
@@ -177,12 +176,10 @@ void loop(){
         byte newNote = channels[i].note-1;
         for(int j=0;j<127;j++){  //recorremos todas las notas a ver si alguna esta asociada al canal 1
           newNote &= ~(1 << 7);
-          //if(newNote > 127) newNote -= 127;
           if(keys[newNote].pressed == true && keys[newNote].channel == i && channels[i].note != newNote){
             channels[i].note = newNote;
             keys[newNote].update = true;
-            //setFreq(i, midi2Freq(channels[i].note));  
-            digitalWrite(13, HIGH);
+
             break;
           }
           newNote -= 1;
@@ -275,34 +272,44 @@ ISR (TIMER2_COMPA_vect)  {
   
   for(int i=0;i<8;i++){
     
+    //arpegio update
     if(arpegioMode && channels[i].arpegioTimer > 0){
       channels[i].arpegioTimer--;
     }
     
+    //glissando update
     if(glissandoMode && channels[i].glissando > 0){       
-       //setFreq(i, midi2Freq(channels[i].note)-channels[i].glissando); 
-       keys[channels[i].note].update = true;
-       channels[i].glissando -= channels[i].glissandoRate;
+      keys[channels[i].note].update = true;
+      if(channels[i].glissando <= channels[i].glissandoRate) channels[i].glissando = 0;
+      else channels[i].glissando -= channels[i].glissandoRate;
     }
     
-    if(keys[channels[i].note].pressed == true && keys[channels[i].note].update == true){
-      keys[channels[i].note].update = false;
-      oscillators[i].volume = 64;
-      setFreq(i, midi2Freq(channels[i].note)-channels[i].glissando);  
-    }
-    else if(keys[channels[i].note].pressed == false && keys[channels[i].note].update == true){
-      if(releaseRate == 0){
+    //vibrato
+    channels[i].vibratoPhase += vibratoTics;
+    unsigned int vibrato = (vibratoAmp * (channels[i].vibratoPhase >> 8)) >> 8;
+    vibrato *= 2;
+    if(vibrato >= vibratoAmp)  vibrato = vibratoAmp*2-vibrato;
+    
+    
+    //update volume and frequency
+ 
+    if(keys[channels[i].note].pressed == true){
+      oscillators[i].volume = 64-vibratoAmp+vibrato;      
+      if(keys[channels[i].note].update == true){  //as the frequency is a more sensitive value to update, we only do it when the update flag is on
+        setFreq(i, midi2Freq(channels[i].note)-channels[i].glissando);  
         keys[channels[i].note].update = false;
+      }       
+    }
+    else if(keys[channels[i].note].pressed == false){
+      if(releaseRate == 0){
         oscillators[i].volume = 0;
       }
       else{
-        if(oscillators[i].volume > 0) oscillators[i].volume -= releaseRate;
-        else if(oscillators[i].volume <= 0){
-          oscillators[i].volume = 0;
-          keys[channels[i].note].update = false;
-        }
+        if(oscillators[i].volume >= releaseRate) oscillators[i].volume -= releaseRate;
+        else oscillators[i].volume = 0;
       }
     }
+
   }
   
 }
@@ -350,8 +357,8 @@ ISR(TIMER1_OVF_vect)  {
   "ld %[waveform],%a[oscBaseAddress]+"  "\n\t" 
   "ld %[dutyVol],%a[oscBaseAddress]+"  "\n\t"  
   
-  "tst %[dutyVol]"  "\n\t"
-  "breq BreakLoop"  "\n\t"    
+  //"tst %[dutyVol]"  "\n\t"
+  //"breq BreakLoop"  "\n\t"    
 
   //"tst %[waveform]"  "\n\t" //we check what waveform we have setup
   //"brne NotSquare"  "\n\t"
@@ -363,8 +370,10 @@ ISR(TIMER1_OVF_vect)  {
   "cpi %[waveform], 3"  "\n\t"
   "breq Noise"  "\n\t"
   
-  //Branch for square wave
   //from here the phaseLow variable will be the wave level
+  
+  //square branch
+
   "cp %[waveVal], %[dutyVol]"  "\n\t" //we compare the wave value to the duty volume
   "brlo SquareOff"  "\n\t"  
   "ser %[phaseLow]"  "\n\t"    //if waveVal > duty then the wave is high
@@ -373,60 +382,63 @@ ISR(TIMER1_OVF_vect)  {
   "clr %[phaseLow]"  "\n\t"    //if waveVal < duty then the wave is low
   "rjmp VolumeMult"  "\n\t"
   
-  "Saw:"  "\n\t"  //This is the branch if its not a square
-  //"dec %[waveform]"  "\n\t"
-  //"tst %[waveform]"  "\n\t" //we check what waveform we have setup
-  //"brne NotSaw"  "\n\t"
-  //Branch for saw wave
+  "Saw:"  "\n\t"  //saw branch
+
   "mov %[phaseLow],%[waveVal]"  "\n\t"
   "rjmp VolumeMult"  "\n\t"
   
-  "Triangle:"  "\n\t"  //This is the branch if its not a saw
-  ///"dec %[waveform]"  "\n\t"
-  ///"tst %[waveform]"  "\n\t" //we check what waveform we have setup
-  ///"brne NotTriangle"  "\n\t"
-  //Branch for triangle wave
+  "Triangle:"  "\n\t"  //triangle branch
+
   "lsl %[waveVal]"  "\n\t" //left shift phase
   "brcc Ascending"  "\n\t" 
   "com %[waveVal]"  "\n\t" //if there is a carry do a xor
+  "Ascending:"  "\n\t" //if ascending do nothing else
   
-  "Ascending:"  "\n\t"
+  //MASK triangle into 4 bits
+  "cbr %[waveVal], 15"  "\n\t" //cbr clears the bits in register, its like 'register AND NOT mask' so for example cbr 170, 15 = 10101010 AND (11111111 - 00001111) = 10100000
+  //that means that from 0 to 15 the wave value is 0,  from 16 to 31 the value is 16, from 32 to 47 the value is 31 etc...
+  //~~
   
   "mov %[phaseLow],%[waveVal]"  "\n\t"  //ascending part if triangle
   "rjmp VolumeMult"  "\n\t"
  
   "Noise:"  "\n\t"  //This is the branch if its not a triangle
-  ///"dec %[waveform]"  "\n\t"
-  ///"tst %[waveform]"  "\n\t" //we check what waveform we have setup
-  ///"brne NotNoise"  "\n\t"
   
   //noise shift
   "tst r21"  "\n\t" //we check what waveform we have setup
-  "brne NoNoiseShift"  "\n\t" 
+  "brne EndShift"  "\n\t" 
   "ldi r20, 2"  "\n\t"
   "lsl r8"  "\n\t"
   "rol r9"  "\n\t"
-  "brvc skipShift"  "\n\t"
+  "brvc EndShift"  "\n\t"
   "eor r8, r20"  "\n\t"
-  "skipShift:"  "\n\t"
-  "NoNoiseShift:"  "\n\t"
-  
-  "mov %[phaseLow],r9"  "\n\t"  
+  "EndShift:"  "\n\t"
+  "mov %[phaseLow], r9"  "\n\t"  
   "rjmp VolumeMult"  "\n\t"
   
  
-  //"NotNoise:"  "\n\t"  //This is the branch if its not a noise
+  //"Another:"  "\n\t"  //new branch
     
   "VolumeMult:"  "\n\t"  //volume 0 to 255
   //we load the volume var of the oscillator into dutyVol
   "ld %[dutyVol],%a[oscBaseAddress]+"  "\n\t"
   "mul %[phaseLow],%[dutyVol]"  "\n\t"
   "clr r0"  "\n\t"
+  
+  
+  //CENTRAMOS SEÑAL  añade 32 operaciones extra
+  "ldi r20, 64"  "\n\t" //usamos 64 porque es 512 / 8 ya que el volumen total es 512 y pueden haber 8 canales cada uno con volumen maximo de 64
+  "sub r20, %[dutyVol]"  "\n\t" //substraemos a 64 el volumen actual
+  "lsr r20"  "\n\t" //desplazamos el registro a la derecha para dividirlo por 2.  ej: si el volumen es 64  r20 = (64-64)/2 = 0     si el volumen es 32 r20 = (64-32)/2 = 16;
+  "add r1,r20"  "\n\t"  //le sumamos al valor de la onda r20 para centrarla
+  //
+  
+  
   "add %A[outputA],r1"  "\n\t"
-  "adc %B[outputA],r0"  "\n\t"
+  "adc %B[outputA],r0"  "\n\t"  //outputA puede ir de 0 a 511 por lo que el volumen maximo es 512/8 = 64
   
   //End of loop
-  "BreakLoop:"
+  //"BreakLoop:"
   "dec %[loopVar]"  "\n\t"
   "brne LoopBegin"  "\n\t" //if loopVar > 0 go to LoopBegin
   :
