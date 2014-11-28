@@ -31,6 +31,7 @@ struct channelStruct {
   volatile byte glissando;  //done
   volatile unsigned int vibratoPhase; 
   volatile byte arpegioTimer; //done
+  volatile boolean burst;
 };
 
 struct channelStruct channels[8];
@@ -55,13 +56,14 @@ byte arpegioDelay = 4;  //if another key is pressed within 0.2s start arpedio mo
 boolean ledOn = false;
 boolean arpegioMode = true;
 boolean glissandoMode = true;
+boolean burst = true;
 byte releaseRate = 0;      // 2,5 secs
 unsigned int vibratoTics = 10*65535UL/1000;  // 10 = 1Hz
 byte vibratoAmp = 16;
 boolean started = false;
 
 
-byte globalWaveform = SQUARE;
+byte globalWaveform = TRI;
 byte globalDutyCycle = 31; //50%: 127   25%: 63  12.5%: 31
 
 void setup(){    
@@ -151,6 +153,7 @@ void loop(){
               keys[data1].channel = lastChannel;
               keys[data1].pressed = true;
               keys[data1].update = true;
+              if(burst) channels[i].burst = true;
               break;
             }
           }
@@ -247,25 +250,26 @@ ISR (TIMER2_COMPA_vect)  {
   
   if(!started) return;
   //Timer 2 called at 100Hz
-  /*
+  
+  
   if(ledTimer > 25 && !ledOn){
     digitalWrite(13, HIGH);
     ledOn = true;
     //oscillators[2].volume = 10;
   }
   
-  if(ledTimer > 27){
+  if(ledTimer > 27 && ledOn){
+    digitalWrite(13, LOW);    
     //oscillators[2].volume = 0;
   }
   
-  if(ledTimer > 50 && ledOn){
-    digitalWrite(13, LOW);
+  if(ledTimer >= 50){
     ledOn = false;
     ledTimer = 0;
   }
 
   ledTimer++;
-  */
+  
   if(arpegioTimer > 0){
     arpegioTimer--;
   }
@@ -282,6 +286,15 @@ ISR (TIMER2_COMPA_vect)  {
       keys[channels[i].note].update = true;
       if(channels[i].glissando <= channels[i].glissandoRate) channels[i].glissando = 0;
       else channels[i].glissando -= channels[i].glissandoRate;
+    }
+    
+    //burst update
+    if(burst){
+      if(channels[i].burst && arpegioTimer > 0) oscillators[i].waveform = NOISE;
+      else if(channels[i].burst){
+        oscillators[i].waveform = globalWaveform;
+        channels[i].burst = false;
+      }
     }
     
     //vibrato
