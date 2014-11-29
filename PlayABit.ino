@@ -2,6 +2,8 @@
 #include <SPI.h>
 #include <MIDI.h>
 
+#include "drumkit.h"
+
 MIDI_CREATE_DEFAULT_INSTANCE();
 
 const int notes[] = {
@@ -10,10 +12,13 @@ const int notes[] = {
   3136, 3322, 3520, 3729, 3951
 };
 
-#define SQUARE 0
+#define PULSE 0
 #define SAW 1
 #define TRI 2
 #define NOISE 3
+
+#define PRESS 1
+#define RELEASE 0
 
 struct oscillatorStruct {
   volatile unsigned int ticks;
@@ -32,6 +37,7 @@ struct channelStruct {
   volatile unsigned int vibratoPhase; 
   volatile byte arpegioTimer; //done
   volatile boolean burst;
+  volatile byte instrument;
 };
 
 struct channelStruct channels[8];
@@ -51,53 +57,49 @@ volatile int outputA = 0;
 
 
 //not volatile variables
-byte ledTimer, arpegioTimer;
+byte arpegioTimer = 0;
 byte arpegioDelay = 4;  //if another key is pressed within 0.2s start arpedio mode
-boolean ledOn = false;
 boolean arpegioMode = true;
 boolean glissandoMode = true;
-boolean burst = true;
-byte releaseRate = 0;      // 2,5 secs
-unsigned int vibratoTics = 10*65535UL/1000;  // 10 = 1Hz
-byte vibratoAmp = 16;
+boolean burst = false;
+byte releaseRate = 0;      // 1 = 2,5 secs
+unsigned int vibratoTics = 4  * 65535UL/100;  // 1 = 1Hz 
+byte vibratoAmp = 8;
 boolean started = false;
+unsigned int trackTics = 20  * 65535UL/100;  // frequency of a track (there are 4 grups of 8 tracks) must be a divisor of 100
+unsigned int trackPhase = 0;
+byte trackCount = 0;
+byte loopCount = 0;
+boolean trackOn;
+
+boolean recording = false;
+boolean replaying = false;
+byte loopTables[4][8][2][3];
 
 
-byte globalWaveform = TRI;
-byte globalDutyCycle = 31; //50%: 127   25%: 63  12.5%: 31
+byte globalInstrument = PULSE;
+byte globalDutyCycle = 127; //50%: 127   25%: 63  12.5%: 31
 
 void setup(){    
   setupTimer();
   
   pinMode(13, OUTPUT);  //LED 13
-  ledTimer = arpegioTimer = 0;
+  arpegioTimer = 0;
   
   //start melody
   oscillators[0].dutyCycle = 127;
-  oscillators[0].volume = 20;
-  oscillators[0].waveform = 0;
-  oscillators[1].dutyCycle = 127;
-  oscillators[1].volume = 20;
-  oscillators[1].waveform = 2;
-  oscillators[2].dutyCycle = 127;
-  oscillators[2].waveform = 3;
-  oscillators[0].ticks = (notes[0] / (0x200 >> 6))*65535UL/31250;
-  oscillators[1].ticks = (notes[7] / (0x200 >> 4))*65535UL/31250;
+  oscillators[0].volume = 50;
+  oscillators[0].waveform = PULSE;
+  oscillators[1].waveform = NOISE;
+
+  setFreq(0, midi2Freq( 88 ));
   delay(100);
-  oscillators[0].ticks = (notes[4] / (0x200 >> 6))*65535UL/31250;
-  delay(100);
-  oscillators[0].ticks = (notes[7] / (0x200 >> 6))*65535UL/31250;
-  oscillators[1].ticks = (notes[0] / (0x200 >> 5))*65535UL/31250;
-  delay(100);
-  oscillators[0].ticks = (notes[0] / (0x200 >> 7))*65535UL/31250;
-  oscillators[1].volume = 0; 
-  delay(300);
-  oscillators[2].volume = 50;
-  oscillators[0].volume = 0;
-  setFreq(2, 15000);
-  delay(20);
-  oscillators[2].volume = 0;
-  //~~~~
+  setFreq(0, midi2Freq( 100 ));
+  for(int i=50;i>=0;i--){
+    oscillators[0].volume = i;
+    delay(20);
+  }
+
 
   MIDI.begin(1);
   
@@ -106,11 +108,11 @@ void setup(){
     channels[i].glissandoRate = 1;
     channels[i].glissando = 0;
     channels[i].vibratoPhase = 0;
+    channels[i].instrument = globalInstrument;
     
     oscillators[i].dutyCycle = globalDutyCycle;  
     oscillators[i].volume = 0;
-    oscillators[i].waveform = globalWaveform;
-
+    oscillators[i].waveform = TRI;
   }
   
   for(int i=0;i<127;i++){
@@ -126,44 +128,26 @@ void setup(){
 void loop(){ 
   
     while(MIDI.read()){
-      byte data1 = MIDI.getData1();
+      byte note = MIDI.getData1();
       byte data2 = MIDI.getData2();
       switch(MIDI.getType()){
         case midi::NoteOn:
-          for(int i=0;i<8;i++){
-            if(glissandoMode && arpegioTimer > 0 && data1-1 == channels[lastChannel].note){ //if note pressed in glissando mode
-              byte g = midi2Freq(data1) - midi2Freq(channels[lastChannel].note);
-              channels[lastChannel].glissando = g;
-              channels[lastChannel].note = data1;
-              keys[data1].channel = lastChannel;
-              keys[data1].pressed = true;
-              keys[data1-1].pressed = false;
-              keys[data1].update = true;
-              keys[data1-1].update = true;
-              break;  
-            }
-            else if(arpegioMode && arpegioTimer > 0){  //else if note pressed in arpegio mode
-              keys[data1].channel = lastChannel;
-              keys[data1].pressed = true;
-              break;
-            }
-            else if(keys[channels[i].note].pressed == false){  //else normal note
-              channels[i].note = data1;
-              lastChannel = i;
-              keys[data1].channel = lastChannel;
-              keys[data1].pressed = true;
-              keys[data1].update = true;
-              if(burst) channels[i].burst = true;
-              break;
-            }
+          playNote(PRESS, note, globalInstrument);
+          if(recording){
+            loopTables[loopCount][trackCount][PRESS][0] = true;
+            loopTables[loopCount][trackCount][PRESS][1] = note;
+            loopTables[loopCount][trackCount][PRESS][2] = globalInstrument;
           }
-          arpegioTimer = arpegioDelay;
           break;
         
         case midi::NoteOff:
-            keys[data1].pressed = false;
-            channels[keys[data1].channel].note = 0;
-            break;
+          playNote(RELEASE, note, globalInstrument);
+          if(recording){
+            loopTables[loopCount][trackCount][RELEASE][0] = true;
+            loopTables[loopCount][trackCount][RELEASE][1] = note;
+            loopTables[loopCount][trackCount][RELEASE][2] = globalInstrument;
+          }
+          break;
         
         default:
           break;  
@@ -193,6 +177,52 @@ void loop(){
     }
     //~~
     
+    
+    //READING VALUES FROM POTENTIMETER
+    int waveVal = analogRead(A0);
+    if(waveVal < 342) globalInstrument = PULSE;
+    else if(waveVal < 683) globalInstrument = TRI;
+    else if(waveVal < 1024) globalInstrument = SAW;
+    //else if(waveVal < 1024) globalInstrument = NOISE;
+        
+}
+
+void playNote(boolean pressed, byte data1, byte instrument){
+  if(pressed){
+    for(int i=0;i<8;i++){
+      if(glissandoMode && arpegioTimer > 0 && data1-1 == channels[lastChannel].note){ //if note pressed in glissando mode
+        byte g = midi2Freq(data1) - midi2Freq(channels[lastChannel].note);
+        channels[lastChannel].glissando = g;
+        channels[lastChannel].note = data1;
+        keys[data1].channel = lastChannel;
+        keys[data1].pressed = true;
+        keys[data1-1].pressed = false;
+        keys[data1].update = true;
+        keys[data1-1].update = true;
+        break;  
+      }
+      else if(arpegioMode && arpegioTimer > 0){  //else if note pressed in arpegio mode
+        keys[data1].channel = lastChannel;
+        keys[data1].pressed = true;
+        break;
+      }
+      else if(keys[channels[i].note].pressed == false){  //else normal note
+        channels[i].note = data1;
+        channels[i].instrument = instrument;
+        lastChannel = i;
+        keys[data1].channel = lastChannel;
+        keys[data1].pressed = true;
+        keys[data1].update = true;
+        if(burst) channels[i].burst = true;
+        break;
+      }
+    }
+    arpegioTimer = arpegioDelay;
+  }
+  else{
+    keys[data1].pressed = false;
+    channels[keys[data1].channel].note = 0;
+  }
 }
 
 void setupTimer(){
@@ -252,27 +282,40 @@ ISR (TIMER2_COMPA_vect)  {
   //Timer 2 called at 100Hz
   
   
-  if(ledTimer > 25 && !ledOn){
-    digitalWrite(13, HIGH);
-    ledOn = true;
-    //oscillators[2].volume = 10;
-  }
+  //LOOPS
+  int trackTime = trackPhase >> 8;
   
-  if(ledTimer > 27 && ledOn){
-    digitalWrite(13, LOW);    
-    //oscillators[2].volume = 0;
-  }
   
-  if(ledTimer >= 50){
-    ledOn = false;
-    ledTimer = 0;
+  if(trackTime >= 128 && !trackOn){
+    digitalWrite(13, LOW);
+    //playNote(RELEASE, 0, 3);
+    trackOn = true;
+    if(replaying && loopTables[loopCount][trackCount][PRESS][0] == true){
+      playNote(PRESS, loopTables[loopCount][trackCount][PRESS][1], loopTables[loopCount][trackCount][PRESS][2]);
+    }
+    if(replaying && loopTables[loopCount][trackCount][RELEASE][0] == true){
+      playNote(RELEASE, loopTables[loopCount][trackCount][RELEASE][1], loopTables[loopCount][trackCount][RELEASE][2]);
+    }
+    trackCount++;
+    if(trackCount >= 8){
+      trackCount = 0;
+      loopCount++;
+      digitalWrite(13, HIGH);
+      //playNote(PRESS, 0, 3);
+      if(loopCount >= 4)
+        loopCount = 0;
+    }
+  } 
+  else if(trackTime < 128 && trackOn){
+    trackOn = false;  
   }
 
-  ledTimer++;
+  trackPhase += trackTics;
   
   if(arpegioTimer > 0){
     arpegioTimer--;
   }
+  // END OF LOOPS
   
   for(int i=0;i<8;i++){
     
@@ -290,9 +333,9 @@ ISR (TIMER2_COMPA_vect)  {
     
     //burst update
     if(burst){
-      if(channels[i].burst && arpegioTimer > 0) oscillators[i].waveform = NOISE;
+      if(channels[i].burst && arpegioTimer > 0) channels[i].instrument = NOISE;
       else if(channels[i].burst){
-        oscillators[i].waveform = globalWaveform;
+        channels[i].instrument = globalInstrument;
         channels[i].burst = false;
       }
     }
@@ -302,15 +345,18 @@ ISR (TIMER2_COMPA_vect)  {
     unsigned int vibrato = (vibratoAmp * (channels[i].vibratoPhase >> 8)) >> 8;
     vibrato *= 2;
     if(vibrato >= vibratoAmp)  vibrato = vibratoAmp*2-vibrato;
+    if(vibratoTics <= 0) vibrato = vibratoAmp;
     
     
-    //update volume and frequency
+    //update volume, instrument and frequency
  
     if(keys[channels[i].note].pressed == true){
-      oscillators[i].volume = 64-vibratoAmp+vibrato;      
+      oscillators[i].volume = 64-vibratoAmp+vibrato;  //sound always has a vibrato
+      //oscillators[i].volume = 64;
+      if(oscillators[i].waveform != channels[i].instrument ) oscillators[i].waveform = channels[i].instrument;     
       if(keys[channels[i].note].update == true){  //as the frequency is a more sensitive value to update, we only do it when the update flag is on
-        setFreq(i, midi2Freq(channels[i].note)-channels[i].glissando);  
-        keys[channels[i].note].update = false;
+        setFreq(i, midi2Freq(channels[i].note)-channels[i].glissando); 
+        keys[channels[i].note].update = false;      
       }       
     }
     else if(keys[channels[i].note].pressed == false){

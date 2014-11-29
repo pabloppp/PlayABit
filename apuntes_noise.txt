@@ -20,3 +20,11 @@ rotate left byte B = 00000000 + C = 00000001
 brvc skip  //si el overflow esta limpio saltamos, si no
 eor r8, r20 exclusive or ej: 00000001 XOR 00000010 = 00000011
 skip:
+
+
+RANGOS DE FRECUENCIA (Hz):
+0,001 -> 0,1   ESTRUCTURA
+0,1 -> 10   RITMO
+1 -> 1000   EFECTOS
+1000 -> 100000  TIMBRE/PITCH
+
