@@ -59,22 +59,21 @@ volatile int outputA = 0;
 //not volatile variables
 byte arpegioTimer = 0;
 byte arpegioDelay = 4;  //if another key is pressed within 0.2s start arpedio mode
-boolean arpegioMode = true;
+boolean arpegioMode = false;
 boolean glissandoMode = true;
 boolean burst = false;
 byte releaseRate = 0;      // 1 = 2,5 secs
 unsigned int vibratoTics = 4  * 65535UL/100;  // 1 = 1Hz 
 byte vibratoAmp = 8;
 boolean started = false;
-unsigned int trackTics = 20  * 65535UL/100;  // frequency of a track (there are 4 grups of 8 tracks) must be a divisor of 100
+unsigned int trackTics = 4  * 65535UL/100;  // frequency of a track (there are 8 grups of 8 tracks) must be a divisor of 100
 unsigned int trackPhase = 0;
 byte trackCount = 0;
-byte loopCount = 0;
 boolean trackOn;
 
-boolean recording = false;
+boolean recording = true;
 boolean replaying = false;
-byte loopTables[4][8][2][3];
+byte loopTables[8][8][4];
 
 
 byte globalInstrument = PULSE;
@@ -134,18 +133,26 @@ void loop(){
         case midi::NoteOn:
           playNote(PRESS, note, globalInstrument);
           if(recording){
-            loopTables[loopCount][trackCount][PRESS][0] = true;
-            loopTables[loopCount][trackCount][PRESS][1] = note;
-            loopTables[loopCount][trackCount][PRESS][2] = globalInstrument;
+            byte noteEvent[4] = {true, PRESS, note, globalInstrument};
+            for(int i=0;i<8;i++){
+              if(loopTables[trackCount][i][0] == false){
+                loopTables[trackCount][i][0] = true; loopTables[trackCount][i][1] = PRESS; loopTables[trackCount][i][2] = note; loopTables[trackCount][i][3] = globalInstrument;
+                break;
+              }
+            }
           }
           break;
         
         case midi::NoteOff:
           playNote(RELEASE, note, globalInstrument);
           if(recording){
-            loopTables[loopCount][trackCount][RELEASE][0] = true;
-            loopTables[loopCount][trackCount][RELEASE][1] = note;
-            loopTables[loopCount][trackCount][RELEASE][2] = globalInstrument;
+            byte noteEvent[4] = {true, RELEASE, note, globalInstrument};
+            for(int i=0;i<8;i++){
+              if(loopTables[trackCount][i][0] == false){
+                loopTables[trackCount][i][0] = true; loopTables[trackCount][i][1] = RELEASE; loopTables[trackCount][i][2] = note; loopTables[trackCount][i][3] = globalInstrument;
+                break;
+              }
+            }
           }
           break;
         
@@ -225,6 +232,20 @@ void playNote(boolean pressed, byte data1, byte instrument){
   }
 }
 
+void playBackNote(boolean pressed, byte data1, byte instrument, byte channel){
+  if(pressed){
+    channels[channel].note = data1;
+    channels[channel].instrument = instrument;
+    channels[channel].note = data1;
+    keys[data1].pressed = true;
+    keys[data1].update = true;
+  }
+  else{
+     keys[data1].pressed = false;
+     channels[channel].note = 0;
+  }
+}
+
 void setupTimer(){
   
   pinMode(9, OUTPUT);  //set OC1A pin to output
@@ -285,37 +306,41 @@ ISR (TIMER2_COMPA_vect)  {
   //LOOPS
   int trackTime = trackPhase >> 8;
   
-  
-  if(trackTime >= 128 && !trackOn){
-    digitalWrite(13, LOW);
-    //playNote(RELEASE, 0, 3);
+  if(trackTime >= 128 && !trackOn){   
     trackOn = true;
-    if(replaying && loopTables[loopCount][trackCount][PRESS][0] == true){
-      playNote(PRESS, loopTables[loopCount][trackCount][PRESS][1], loopTables[loopCount][trackCount][PRESS][2]);
+    
+    
+    //replay loop
+    if(replaying){
+      for(int i=0;i<8;i++){
+        if(loopTables[trackCount][i][0] == true){
+          playBackNote(loopTables[trackCount][i][1], loopTables[trackCount][i][2], loopTables[trackCount][i][3], i);
+        }
+      }
     }
-    if(replaying && loopTables[loopCount][trackCount][RELEASE][0] == true){
-      playNote(RELEASE, loopTables[loopCount][trackCount][RELEASE][1], loopTables[loopCount][trackCount][RELEASE][2]);
-    }
+    
     trackCount++;
+    if(trackCount%2 == 0){
+      digitalWrite(13, HIGH);
+      //playBackNote(PRESS, 60, PULSE, 7);
+    }
     if(trackCount >= 8){
       trackCount = 0;
-      loopCount++;
-      digitalWrite(13, HIGH);
-      //playNote(PRESS, 0, 3);
-      if(loopCount >= 4)
-        loopCount = 0;
     }
   } 
   else if(trackTime < 128 && trackOn){
+    digitalWrite(13, LOW);
+    //playBackNote(RELEASE, 50, PULSE, 7);
     trackOn = false;  
   }
 
   trackPhase += trackTics;
+  // END OF LOOPS
   
   if(arpegioTimer > 0){
     arpegioTimer--;
   }
-  // END OF LOOPS
+
   
   for(int i=0;i<8;i++){
     
